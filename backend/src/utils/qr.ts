@@ -2,6 +2,7 @@ import crypto from "crypto";
 import QRCode from "qrcode";
 import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
+import db from "../config/database";
 dotenv.config();
 
 const SECRET = process.env.QR_SECRET || "default_secret";
@@ -13,8 +14,6 @@ export interface QRPayload {
   timestamp: number;
   signature: string;
 }
-
-const usedNonces = new Set<string>();
 
 export function generateQRPayload(lectureId: string): QRPayload {
   const nonce = uuidv4();
@@ -33,7 +32,7 @@ export async function generateQRImage(lectureId: string): Promise<string> {
   return await QRCode.toDataURL(json, {
     width: 300,
     margin: 2,
-    color: { dark: "#000000", light: "#ffffff" },
+    color: { dark: "#ffffff", light: "#000000" },
   });
 }
 
@@ -43,23 +42,28 @@ export function verifyQRPayload(payload: QRPayload): {
 } {
   const now = Math.floor(Date.now() / 1000);
 
+  // 1. Check expiry
   if (now - payload.timestamp > EXPIRY)
-    return { valid: false, reason: "QR code expired" };
+    return { valid: false, reason: "QR code expired — ask professor to refresh" };
 
-  if (usedNonces.has(payload.nonce))
-    return { valid: false, reason: "QR code already used" };
-
+  // 2. Verify HMAC signature
   const data = `${payload.lecture_id}:${payload.nonce}:${payload.timestamp}`;
   const expected = crypto
     .createHmac("sha256", SECRET)
     .update(data)
     .digest("hex");
-
   if (expected !== payload.signature)
-    return { valid: false, reason: "Invalid QR signature" };
+    return { valid: false, reason: "Invalid QR signature — possible forgery detected" };
 
-  usedNonces.add(payload.nonce);
-  if (usedNonces.size > 1000) usedNonces.clear();
+  // 3. Check nonce not reused (DB-backed, survives restarts)
+  const existing = db
+    .prepare("SELECT nonce FROM used_nonces WHERE nonce = ?")
+    .get(payload.nonce);
+  if (existing)
+    return { valid: false, reason: "QR code already used — proxy attempt blocked" };
+
+  // 4. Mark nonce as used atomically
+  db.prepare("INSERT INTO used_nonces (nonce) VALUES (?)").run(payload.nonce);
 
   return { valid: true };
 }

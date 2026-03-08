@@ -1,47 +1,49 @@
 import { Router, Request, Response } from "express";
 import { validateAttendanceRequest } from "../middleware/validateAttendance";
+import db from "../config/database";
 
 const router = Router();
 
-const attendanceLogs: Array<{
-  student_wallet: string;
-  lecture_id: string;
-  timestamp: number;
-  verified: boolean;
-}> = [];
-
+// POST /api/attendance/mark
 router.post("/mark", validateAttendanceRequest, (req: Request, res: Response) => {
-  const { lecture_id, student_wallet } = req.body;
+  const { lecture_id, student_wallet, device_fingerprint, student_lat, student_lng, solana_tx } = req.body;
 
-  if (!student_wallet) {
-    res.status(400).json({ success: false, error: "student_wallet required" });
-    return;
-  }
-
-  const duplicate = attendanceLogs.find(
-    (a) => a.student_wallet === student_wallet && a.lecture_id === lecture_id
+  db.prepare(
+    "INSERT INTO attendance (student_wallet, lecture_id, timestamp, device_fingerprint, student_lat, student_lng, solana_tx) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    student_wallet, lecture_id,
+    Math.floor(Date.now() / 1000),
+    device_fingerprint || null,
+    student_lat, student_lng,
+    solana_tx || null
   );
-  if (duplicate) {
-    res.status(409).json({ success: false, error: "Attendance already marked" });
-    return;
-  }
-
-  const record = { student_wallet, lecture_id, timestamp: Date.now(), verified: true };
-  attendanceLogs.push(record);
 
   res.json({
     success: true,
-    message: "Attendance verified — ready to submit to Solana",
-    record,
+    message: "Attendance verified and recorded",
+    anti_proxy_checks: {
+      qr_verified: true,
+      time_window: true,
+      geolocation: true,
+      device_check: true,
+      duplicate_blocked: true,
+      wallet_verified: true,
+    },
   });
 });
 
+// GET /api/attendance/list?lecture_id=42
 router.get("/list", (req: Request, res: Response) => {
   const { lecture_id } = req.query;
-  const results = lecture_id
-    ? attendanceLogs.filter((a) => a.lecture_id === lecture_id)
-    : attendanceLogs;
-  res.json({ success: true, count: results.length, records: results });
+  const records = lecture_id
+    ? db.prepare(
+        "SELECT a.*, s.name, s.student_id FROM attendance a LEFT JOIN students s ON a.student_wallet = s.wallet WHERE a.lecture_id = ? ORDER BY a.timestamp DESC"
+      ).all(lecture_id)
+    : db.prepare(
+        "SELECT a.*, s.name, s.student_id FROM attendance a LEFT JOIN students s ON a.student_wallet = s.wallet ORDER BY a.timestamp DESC"
+      ).all();
+
+  res.json({ success: true, count: (records as any[]).length, records });
 });
 
 export default router;

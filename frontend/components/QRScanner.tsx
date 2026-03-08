@@ -1,70 +1,61 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Html5Qrcode } from "html5-qrcode";
 
-interface Props {
-  onScan: (data: string) => void;
-}
+interface Props { onScan: (data: string) => void; }
 
 export default function QRScanner({ onScan }: Props) {
-  const scannerRef = useRef<Html5Qrcode | null>(null);
   const [active, setActive] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError]   = useState("");
+  const ref = useRef<any>(null);
 
-  const startScanner = async () => {
+  const start = async () => {
+    setError("");
     try {
-      const scanner = new Html5Qrcode("qr-reader");
-      scannerRef.current = scanner;
-      await scanner.start(
+      const { Html5Qrcode } = await import("html5-qrcode");
+      const s = new Html5Qrcode("qr-box");
+      ref.current = s;
+      await s.start(
         { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (text) => {
-          onScan(text);
-          stopScanner();
-        },
+        { fps: 10, qrbox: { width: 200, height: 200 } },
+        (text: string) => { onScan(text); stop(); },
         () => {}
       );
       setActive(true);
     } catch {
-      setError("Camera access denied. Please allow camera permissions.");
+      setError("CAMERA ACCESS DENIED — ALLOW PERMISSIONS AND RETRY");
     }
   };
 
-  const stopScanner = async () => {
-    if (scannerRef.current && active) {
-      await scannerRef.current.stop();
-      setActive(false);
-    }
+  const stop = async () => {
+    try { if (ref.current) { await ref.current.stop(); ref.current = null; } } catch {}
+    setActive(false);
   };
 
-  useEffect(() => {
-    return () => {
-      stopScanner();
-    };
-  }, []);
+  useEffect(() => () => { stop(); }, []);
 
   return (
-    <div className="flex flex-col items-center gap-4">
+    <div className="flex flex-col items-center gap-5 w-full">
       <div
-        id="qr-reader"
-        className="w-72 h-72 bg-gray-800 rounded-xl overflow-hidden"
-      />
-      {error && <p className="text-red-400 text-sm">{error}</p>}
-      {!active ? (
-        <button
-          onClick={startScanner}
-          className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-xl transition"
-        >
-          📷 Start Scanner
-        </button>
-      ) : (
-        <button
-          onClick={stopScanner}
-          className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl transition"
-        >
-          ⏹ Stop Scanner
-        </button>
-      )}
+        id="qr-box"
+        className="w-64 h-64 border border-[#1a1a1a] bg-black overflow-hidden relative flex items-center justify-center"
+      >
+        {!active && <span className="text-xs text-[#252525] tracking-[0.15em]">CAMERA_INACTIVE</span>}
+        {active && (
+          <>
+            <div className="absolute top-2 left-2  w-5 h-5 border-t border-l border-white" />
+            <div className="absolute top-2 right-2 w-5 h-5 border-t border-r border-white" />
+            <div className="absolute bottom-2 left-2  w-5 h-5 border-b border-l border-white" />
+            <div className="absolute bottom-2 right-2 w-5 h-5 border-b border-r border-white" />
+          </>
+        )}
+      </div>
+
+      {error && <p className="text-xs text-[#555] tracking-[0.1em] text-center">{error}</p>}
+
+      {!active
+        ? <button onClick={start} className="btn-primary px-10 py-3 text-xs tracking-[0.15em]">ACTIVATE SCANNER</button>
+        : <button onClick={stop}  className="btn-ghost  px-8  py-2 text-xs tracking-[0.15em]">DEACTIVATE</button>
+      }
     </div>
   );
 }

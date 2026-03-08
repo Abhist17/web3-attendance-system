@@ -1,15 +1,33 @@
 import { Router, Request, Response } from "express";
 import { generateQRImage, generateQRPayload } from "../utils/qr";
-import { setLectureLocation } from "../middleware/validateAttendance";
+import db from "../config/database";
 
 const router = Router();
 
+// GET /api/qr/generate?lecture_id=42
 router.get("/generate", async (req: Request, res: Response) => {
   const { lecture_id } = req.query;
   if (!lecture_id) {
     res.status(400).json({ success: false, error: "lecture_id required" });
     return;
   }
+
+  // Check lecture exists
+  const lecture = db
+    .prepare("SELECT * FROM lectures WHERE lecture_id = ?")
+    .get(lecture_id as string) as any;
+  if (!lecture) {
+    res.status(404).json({ success: false, error: "Lecture not found — create it first" });
+    return;
+  }
+
+  // Check time window
+  const now = Math.floor(Date.now() / 1000);
+  if (now > lecture.deadline) {
+    res.status(403).json({ success: false, error: "Lecture attendance window is closed" });
+    return;
+  }
+
   try {
     const qrImage = await generateQRImage(lecture_id as string);
     const payload = generateQRPayload(lecture_id as string);
@@ -17,16 +35,6 @@ router.get("/generate", async (req: Request, res: Response) => {
   } catch {
     res.status(500).json({ success: false, error: "QR generation failed" });
   }
-});
-
-router.post("/set-location", (req: Request, res: Response) => {
-  const { lecture_id, lat, lng } = req.body;
-  if (!lecture_id || lat === undefined || lng === undefined) {
-    res.status(400).json({ success: false, error: "Missing fields" });
-    return;
-  }
-  setLectureLocation(lecture_id, { lat: parseFloat(lat), lng: parseFloat(lng) });
-  res.json({ success: true, message: "Location set for lecture " + lecture_id });
 });
 
 export default router;

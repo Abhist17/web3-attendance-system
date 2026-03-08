@@ -23,10 +23,10 @@ export function getDistance(a: Coordinates, b: Coordinates): number {
 }
 
 export function isWithinRadius(
-  studentCoords: Coordinates,
-  classroomCoords: Coordinates,
-  radiusMeters: number = ALLOWED_RADIUS
+  student: Coordinates,
+  classroom: Coordinates,
+  radius: number = ALLOWED_RADIUS
 ): { allowed: boolean; distance: number } {
-  const distance = getDistance(studentCoords, classroomCoords);
-  return { allowed: distance <= radiusMeters, distance: Math.round(distance) };
+  const distance = getDistance(student, classroom);
+  return { allowed: distance <= radius, distance: Math.round(distance) };
 }

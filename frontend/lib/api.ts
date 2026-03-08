@@ -11,9 +11,22 @@ export const createLecture = (data: {
   professor_wallet: string;
   start_time: number;
   deadline: number;
+  classroom_lat?: number;
+  classroom_lng?: number;
 }) => API.post("/lecture/create", data);
 
 export const getLectures = () => API.get("/lecture/list");
+
+export const registerStudent = (data: {
+  wallet: string;
+  student_id: string;
+  name: string;
+  department: string;
+  device_fingerprint: string;
+}) => API.post("/student/register", data);
+
+export const getStudent = (wallet: string) =>
+  API.get(`/student/${wallet}`);
 
 export const markAttendance = (data: {
   lecture_id: string;
@@ -21,6 +34,8 @@ export const markAttendance = (data: {
   qr_payload: object;
   student_lat: number;
   student_lng: number;
+  device_fingerprint: string;
+  solana_tx?: string;
 }) => API.post("/attendance/mark", data);
 
 export const getAttendance = (lectureId: string) =>
