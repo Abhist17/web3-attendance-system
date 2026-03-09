@@ -29,7 +29,7 @@ export default function Home() {
           SOLANA · ANCHOR · ANTI-PROXY SYSTEM
         </p>
         <h1 className="font-display text-6xl md:text-8xl font-black text-white tracking-tighter leading-none">
-          WEB3<br/>ATTEND
+          ON-CHAIN<br/>ATTENDANCE SYSTEM
         </h1>
         <p className="text-xs text-[#3a3a3a] tracking-[0.2em] max-w-xs mx-auto leading-6">
           DECENTRALIZED ATTENDANCE<br/>

@@ -1,15 +1,29 @@
 "use client";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+
+const WalletMultiButton = dynamic(
+  async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
+  { ssr: false, loading: () => (
+    <button style={{
+      background: "transparent",
+      border: "1px solid #2a2a2a",
+      color: "#333",
+      fontFamily: "monospace",
+      fontSize: "12px",
+      padding: "8px 18px",
+      letterSpacing: "0.1em",
+      cursor: "wait",
+      borderRadius: "2px"
+    }}>
+      LOADING...
+    </button>
+  )}
+);
 
 export default function Navbar() {
   const path = usePathname();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => { setMounted(true); }, []);
-
   const links = [
     { href: "/",          label: "HOME"      },
     { href: "/register",  label: "REGISTER"  },
@@ -42,7 +56,7 @@ export default function Navbar() {
             <div className="dot" />
             <span className="text-xs text-[#2a2a2a] tracking-[0.15em]">DEVNET</span>
           </div>
-          {mounted && <WalletMultiButton />}
+          <WalletMultiButton />
         </div>
       </div>
     </nav>

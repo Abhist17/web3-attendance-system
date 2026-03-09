@@ -8,13 +8,12 @@ const DEPTS = ["Computer Science","Electronics","Mechanical","Civil","Mathematic
 
 export default function RegisterPage() {
   const { publicKey } = useWallet();
-  const [mounted, setMounted]     = useState(false);
   const [form, setForm]           = useState({ student_id: "", name: "", department: "" });
   const [status, setStatus]       = useState<"idle"|"loading"|"done"|"error">("idle");
   const [message, setMessage]     = useState("");
   const [existing, setExisting]   = useState<any>(null);
 
-  useEffect(() => { setMounted(true); }, []);
+
 
   useEffect(() => {
     if (!publicKey) return;
@@ -43,7 +42,7 @@ export default function RegisterPage() {
     }
   };
 
-  if (!mounted) return null;
+ 
 
   return (
     <div className="max-w-md mx-auto flex flex-col gap-6 relative z-10">

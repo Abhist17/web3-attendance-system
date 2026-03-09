@@ -11,13 +11,13 @@ type Status = "idle" | "submitting" | "done" | "error";
 
 export default function StudentPage() {
   const { publicKey } = useWallet();
-  const [mounted, setMounted]     = useState(false);
+
   const [status, setStatus]       = useState<Status>("idle");
   const [message, setMessage]     = useState("");
   const [checks, setChecks]       = useState<string[]>([]);
   const [history, setHistory]     = useState<any[]>([]);
 
-  useEffect(() => { setMounted(true); }, []);
+
 
   useEffect(() => {
     if (!publicKey) return;
@@ -68,8 +68,6 @@ export default function StudentPage() {
   };
 
   const reset = () => { setStatus("idle"); setChecks([]); setMessage(""); };
-
-  if (!mounted) return null;
 
   return (
     <div className="max-w-xl mx-auto flex flex-col gap-6 relative z-10">
