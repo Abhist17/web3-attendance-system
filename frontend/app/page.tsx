@@ -1,83 +1,99 @@
-"use client";
 import Link from "next/link";
-import { useEffect, useState } from "react";
 
-const LAYERS = [
-  "HMAC-SIGNED ROTATING QR",
-  "DB-BACKED NONCE (ONE-TIME USE)",
-  "GEOLOCATION RADIUS 50M",
-  "TIME WINDOW ENFORCEMENT",
-  "DEVICE FINGERPRINT BINDING",
-  "BLOCKCHAIN DUPLICATE LOCK",
-  "WALLET IDENTITY PROOF",
+const DEFENCES = [
+  {
+    title: "Rotating signed codes",
+    body: "Each QR carries an HMAC signature and expires after 60 seconds. A forwarded screenshot is dead on arrival.",
+  },
+  {
+    title: "Replay protection",
+    body: "Every code is single-use per wallet. Re-submitting a captured payload is rejected.",
+  },
+  {
+    title: "Geofencing",
+    body: "Check-ins are compared against the classroom coordinates and refused beyond the configured radius.",
+  },
+  {
+    title: "Time window",
+    body: "Attendance is only accepted between the lecture's start time and its deadline.",
+  },
+  {
+    title: "Device binding",
+    body: "A wallet is bound to the device it registered on, so a friend cannot mark you present from their phone.",
+  },
+  {
+    title: "On-chain record",
+    body: "Each check-in is a Solana account derived from the student and lecture, so duplicates are impossible and records are public.",
+  },
+];
+
+const ROLES = [
+  {
+    href: "/register",
+    label: "Register",
+    body: "Bind your wallet and device to a student record.",
+  },
+  {
+    href: "/professor",
+    label: "Professor",
+    body: "Open a lecture and project the live code.",
+  },
+  {
+    href: "/student",
+    label: "Student",
+    body: "Scan the code to check in.",
+  },
 ];
 
 export default function Home() {
-  const [active, setActive] = useState(0);
-
-  useEffect(() => {
-    const t = setInterval(() => setActive((a) => (a + 1) % LAYERS.length), 1400);
-    return () => clearInterval(t);
-  }, []);
-
   return (
-    <div className="min-h-[85vh] flex flex-col items-center justify-center gap-16 relative z-10">
-
-      {/* Hero */}
-      <div className="text-center flex flex-col gap-4">
-        <p className="text-xs text-[#2a2a2a] tracking-[0.4em]">
-          SOLANA · ANCHOR · ANTI-PROXY SYSTEM
-        </p>
-        <h1 className="font-display text-6xl md:text-8xl font-black text-white tracking-tighter leading-none">
-          ON-CHAIN<br/>ATTENDANCE SYSTEM
+    <div className="flex flex-col gap-16 py-6 sm:gap-20 sm:py-10">
+      <section className="flex flex-col items-center gap-6 text-center">
+        <p className="label">Solana · Anchor · Devnet</p>
+        <h1 className="font-display text-4xl font-black leading-[1.05] tracking-tight text-fg sm:text-6xl">
+          Attendance that
+          <br />
+          cannot be proxied
         </h1>
-        <p className="text-xs text-[#3a3a3a] tracking-[0.2em] max-w-xs mx-auto leading-6">
-          DECENTRALIZED ATTENDANCE<br/>
-          NO PROXIES · NO FAKES<br/>
-          EVERY RECORD ON-CHAIN
+        <p className="max-w-md text-sm leading-relaxed text-fg-muted">
+          Rotating signed QR codes, geofencing and device binding, with every verified check-in
+          written to Solana as its own account.
         </p>
-      </div>
-
-      {/* Layers */}
-      <div className="card w-full max-w-sm p-6 flex flex-col gap-1">
-        <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-4">
-          ANTI-PROXY LAYERS
-        </p>
-        {LAYERS.map((layer, i) => (
-          <div key={i} className="flex items-center gap-3 py-1.5 border-b border-[#0d0d0d] last:border-0">
-            <div className={`w-1 h-1 rounded-full flex-shrink-0 transition-all duration-500 ${
-              i < active ? "bg-white" : i === active ? "bg-white animate-pulse" : "bg-[#1a1a1a]"
-            }`} />
-            <span className={`text-xs tracking-[0.1em] flex-1 transition-colors duration-300 ${
-              i <= active ? "text-white" : "text-[#252525]"
-            }`}>
-              {layer}
-            </span>
-            {i < active  && <span className="text-xs text-[#3a3a3a]">OK</span>}
-            {i === active && <span className="text-xs text-white blink">_</span>}
-          </div>
-        ))}
-      </div>
-
-      {/* Nav */}
-      <div className="grid grid-cols-3 gap-3 w-full max-w-sm">
-        {[
-          { href: "/register",  label: "REGISTER",  desc: "Bind wallet" },
-          { href: "/professor", label: "PROFESSOR", desc: "Create QR"   },
-          { href: "/student",   label: "STUDENT",   desc: "Scan & mark" },
-        ].map((item) => (
-          <Link key={item.href} href={item.href}>
-            <div className="card p-4 text-center cursor-pointer hover:bg-[#0f0f0f] transition-colors">
-              <p className="font-display text-xs font-bold text-white tracking-[0.1em] mb-1">{item.label}</p>
-              <p className="text-xs text-[#333]">{item.desc}</p>
-            </div>
+        <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+          <Link href="/register" className="btn btn-primary px-6 py-3">
+            Get started
           </Link>
-        ))}
-      </div>
+          <Link href="/professor" className="btn btn-ghost px-6 py-3">
+            Run a lecture
+          </Link>
+        </div>
+      </section>
 
-      <p className="text-xs text-[#181818] tracking-widest font-mono">
-        6p26MgeSFbR7UFdrsUU62sbNH8Zh1bY59ob8NmfdibBc
-      </p>
+      <section className="flex flex-col gap-5">
+        <h2 className="label">How proxy attendance is blocked</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {DEFENCES.map((item) => (
+            <article key={item.title} className="card flex flex-col gap-2 p-5">
+              <h3 className="text-sm text-fg">{item.title}</h3>
+              <p className="text-xs leading-relaxed text-fg-muted">{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-5">
+        <h2 className="label">Pick your role</h2>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {ROLES.map((role) => (
+            <Link key={role.href} href={role.href} className="card card-interactive p-5">
+              <p className="font-display text-sm font-bold tracking-[0.1em] text-fg">
+                {role.label}
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-fg-muted">{role.body}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

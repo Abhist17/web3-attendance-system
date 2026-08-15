@@ -1,6 +1,8 @@
-import { Connection, clusterApiUrl } from "@solana/web3.js";
-import dotenv from "dotenv";
-dotenv.config();
+import { Connection, clusterApiUrl, Cluster } from "@solana/web3.js";
+import { env } from "./env";
 
-export const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
-export const PROGRAM_ID = process.env.PROGRAM_ID || "";
+const endpoint =
+  env.solanaRpcUrl || clusterApiUrl((env.solanaNetwork as Cluster) ?? "devnet");
+
+export const connection = new Connection(endpoint, "confirmed");
+export const PROGRAM_ID = env.programId;

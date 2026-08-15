@@ -1,149 +1,383 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { createLecture, getAttendance, getLectures } from "@/lib/api";
-import dynamic from "next/dynamic";
 
-const QRDisplay = dynamic(() => import("@/components/QRDisplay"), { ssr: false });
+import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+import { useWallet } from "@solana/wallet-adapter-react";
+import {
+  createLecture,
+  getAttendance,
+  getLectures,
+  apiErrorMessage,
+  type Lecture,
+  type RosterEntry,
+} from "@/lib/api";
+import {
+  useAttendanceProgram,
+  createLectureOnChain,
+  isLectureOnChain,
+  chainErrorMessage,
+  MAX_LECTURE_ID_LEN,
+} from "@/lib/solana";
+import {
+  Banner,
+  EmptyState,
+  ExplorerLink,
+  Field,
+  PageHeader,
+  Panel,
+  WalletGate,
+  truncateAddress,
+  useMounted,
+} from "@/components/ui";
+
+const QRDisplay = dynamic(() => import("@/components/QRDisplay"), {
+  ssr: false,
+  loading: () => (
+    <div className="card flex aspect-square items-center justify-center p-6">
+      <span className="spinner h-6 w-6" />
+    </div>
+  ),
+});
+
+const DURATIONS = [
+  { value: "5", label: "5 minutes" },
+  { value: "10", label: "10 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "60", label: "60 minutes" },
+];
+
+type Step = "idle" | "signing" | "saving";
 
 export default function ProfessorPage() {
+  const mounted = useMounted();
   const { publicKey } = useWallet();
-  const [mounted, setMounted]         = useState(false);
-  const [form, setForm]               = useState({ lecture_id:"", subject:"", duration:"10", lat:"", lng:"" });
-  const [activeLecture, setActive]    = useState("");
-  const [attendance, setAttendance]   = useState<any[]>([]);
-  const [lectures, setLectures]       = useState<any[]>([]);
-  const [message, setMessage]         = useState("");
-  const [loading, setLoading]         = useState(false);
+  const program = useAttendanceProgram();
 
-  useEffect(() => { setMounted(true); }, []);
+  const [form, setForm] = useState({
+    lecture_id: "",
+    subject: "",
+    duration: "10",
+    lat: "",
+    lng: "",
+  });
+  const [step, setStep] = useState<Step>("idle");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [locating, setLocating] = useState(false);
+
+  const [activeLecture, setActiveLecture] = useState("");
+  const [roster, setRoster] = useState<RosterEntry[]>([]);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+
+  const loadLectures = useCallback(async () => {
+    if (!publicKey) return;
+    try {
+      setLectures(await getLectures(publicKey.toString()));
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not load your lectures"));
+    }
+  }, [publicKey]);
 
   useEffect(() => {
-    getLectures().then((r) => setLectures(r.data.lectures)).catch(() => {});
-  }, [activeLecture]);
+    void loadLectures();
+  }, [loadLectures]);
 
-  const useLocation = () => {
-    navigator.geolocation.getCurrentPosition((p) =>
-      setForm((f) => ({ ...f, lat: p.coords.latitude.toFixed(6), lng: p.coords.longitude.toFixed(6) }))
+  const loadRoster = useCallback(async (lectureId: string) => {
+    if (!lectureId) return;
+    try {
+      setRoster(await getAttendance(lectureId));
+    } catch {
+      // A transient roster fetch failure shouldn't clobber the page; the next
+      // poll will pick it up.
+    }
+  }, []);
+
+  // Live roster: the professor should see students appear without clicking.
+  useEffect(() => {
+    if (!activeLecture) return;
+    void loadRoster(activeLecture);
+    const id = setInterval(() => void loadRoster(activeLecture), 5000);
+    return () => clearInterval(id);
+  }, [activeLecture, loadRoster]);
+
+  const useCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      setError("This browser cannot report a location.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setForm((f) => ({
+          ...f,
+          lat: pos.coords.latitude.toFixed(6),
+          lng: pos.coords.longitude.toFixed(6),
+        }));
+        setLocating(false);
+      },
+      () => {
+        setError("Could not read your location. Allow location access and try again.");
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
-  const create = async () => {
-    if (!publicKey) return setMessage("CONNECT WALLET FIRST");
-    if (!form.lecture_id || !form.subject) return setMessage("FILL REQUIRED FIELDS");
-    setLoading(true);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!publicKey || !program) return;
+
+    const lectureId = form.lecture_id.trim();
+    const subject = form.subject.trim();
+    if (!lectureId || !subject) {
+      setError("A lecture ID and subject are required.");
+      return;
+    }
+    if (lectureId.length > MAX_LECTURE_ID_LEN) {
+      setError(`Lecture ID must be at most ${MAX_LECTURE_ID_LEN} characters.`);
+      return;
+    }
+
+    setError("");
+    setNotice("");
+
+    const startTime = Math.floor(Date.now() / 1000);
+    const deadline = startTime + parseInt(form.duration, 10) * 60;
+    let tx = "";
+
     try {
-      const now = Math.floor(Date.now() / 1000);
+      if (await isLectureOnChain(program, lectureId)) {
+        setError(`Lecture "${lectureId}" already exists on-chain. Pick a different ID.`);
+        return;
+      }
+      setStep("signing");
+      tx = await createLectureOnChain(program, { lectureId, subject, startTime, deadline });
+    } catch (err) {
+      setStep("idle");
+      setError(chainErrorMessage(err, "Could not create the lecture on-chain"));
+      return;
+    }
+
+    try {
+      setStep("saving");
       await createLecture({
-        lecture_id: form.lecture_id, subject: form.subject,
+        lecture_id: lectureId,
+        subject,
         professor_wallet: publicKey.toString(),
-        start_time: now, deadline: now + parseInt(form.duration) * 60,
+        start_time: startTime,
+        deadline,
         classroom_lat: form.lat ? parseFloat(form.lat) : undefined,
         classroom_lng: form.lng ? parseFloat(form.lng) : undefined,
+        solana_tx: tx,
       });
-      setActive(form.lecture_id);
-      setMessage("LECTURE CREATED — QR STREAM ACTIVE");
-    } catch (e: any) {
-      setMessage(e.response?.data?.error || "ERROR");
+      setActiveLecture(lectureId);
+      setRoster([]);
+      setNotice(`Lecture ${lectureId} is live. Project the QR code for your class.`);
+      setForm({ lecture_id: "", subject: "", duration: "10", lat: "", lng: "" });
+      await loadLectures();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Lecture created on-chain, but saving it locally failed"));
+    } finally {
+      setStep("idle");
     }
-    setLoading(false);
   };
 
-  const refresh = async () => {
-    if (!activeLecture) return;
-    const r = await getAttendance(activeLecture);
-    setAttendance(r.data.records);
-  };
+  const busy = step !== "idle";
+  const activeMeta = lectures.find((l) => l.lecture_id === activeLecture);
 
   if (!mounted) return null;
 
   return (
-    <div className="flex flex-col gap-6 relative z-10">
-      <div>
-        <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-2">SYSTEM :: PROFESSOR</p>
-        <h1 className="font-display text-2xl font-black text-white tracking-[0.1em]">LECTURE CONTROL</h1>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        eyebrow="Professor"
+        title="Lecture control"
+        description="Create a lecture, project the rotating QR code, and watch attendance land in real time."
+      />
 
-      {!publicKey && (
-        <div className="card p-4">
-          <p className="text-xs text-[#444] tracking-[0.15em]">CONNECT WALLET TO PROCEED</p>
-        </div>
-      )}
+      {!publicKey ? (
+        <WalletGate message="Connect the wallet you want to own these lectures. It signs the on-chain record." />
+      ) : (
+        <>
+          <form onSubmit={submit}>
+            <Panel title="New lecture">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Lecture ID" hint="Used as the on-chain address. Must be unique.">
+                  <input
+                    className="input"
+                    placeholder="e.g. CS101-W3"
+                    maxLength={MAX_LECTURE_ID_LEN}
+                    value={form.lecture_id}
+                    onChange={(e) => setForm({ ...form, lecture_id: e.target.value })}
+                    required
+                  />
+                </Field>
 
-      {/* Create form */}
-      <div className="card p-6 flex flex-col gap-4">
-        <p className="text-xs text-[#2a2a2a] tracking-[0.2em]">CREATE_LECTURE</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input className="input px-4 py-3" placeholder="LECTURE_ID (e.g. CS101)" value={form.lecture_id} onChange={(e)=>setForm({...form,lecture_id:e.target.value})} />
-          <input className="input px-4 py-3" placeholder="SUBJECT" value={form.subject} onChange={(e)=>setForm({...form,subject:e.target.value})} />
-          <select className="input px-4 py-3" value={form.duration} onChange={(e)=>setForm({...form,duration:e.target.value})}>
-            <option value="5">5 MIN WINDOW</option>
-            <option value="10">10 MIN WINDOW</option>
-            <option value="30">30 MIN WINDOW</option>
-            <option value="60">60 MIN WINDOW</option>
-          </select>
-          <button onClick={useLocation} className="input px-4 py-3 text-left hover:border-[#444] transition cursor-pointer">
-            {form.lat ? `${form.lat}, ${form.lng}` : "USE MY LOCATION (CLASSROOM)"}
-          </button>
-        </div>
-        <div className="flex items-center gap-4">
-          <button onClick={create} disabled={loading || !publicKey} className="btn-primary px-8 py-3 text-xs tracking-[0.15em]">
-            {loading ? "CREATING..." : "CREATE LECTURE"}
-          </button>
-          {message && <p className="text-xs text-[#555] tracking-[0.1em]">{message}</p>}
-        </div>
-      </div>
+                <Field label="Subject">
+                  <input
+                    className="input"
+                    placeholder="e.g. Distributed Systems"
+                    maxLength={100}
+                    value={form.subject}
+                    onChange={(e) => setForm({ ...form, subject: e.target.value })}
+                    required
+                  />
+                </Field>
 
-      {/* Active QR + attendance */}
-      {activeLecture && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <QRDisplay lectureId={activeLecture} />
-          <div className="card p-6 flex flex-col gap-4">
-            <div className="flex justify-between items-center">
-              <p className="text-xs text-[#2a2a2a] tracking-[0.2em]">ATTENDANCE_LOG</p>
-              <button onClick={refresh} className="text-xs text-[#333] hover:text-white transition tracking-[0.1em]">
-                REFRESH
-              </button>
-            </div>
-            <div className="flex flex-col gap-0 overflow-y-auto max-h-56 flex-1">
-              {attendance.length === 0 ? (
-                <p className="text-xs text-[#1e1e1e] tracking-[0.1em]">AWAITING ENTRIES...</p>
-              ) : attendance.map((a, i) => (
-                <div key={i} className="py-2 border-b border-[#0d0d0d]">
-                  <p className="text-xs text-white">{a.name || "UNKNOWN"} · {a.student_id || "N/A"}</p>
-                  <p className="text-xs text-[#333] truncate mt-0.5">{a.student_wallet}</p>
-                  <p className="text-xs text-[#222] mt-0.5">{new Date(a.timestamp*1000).toLocaleTimeString()}</p>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-between pt-3 border-t border-[#111]">
-              <span className="text-xs text-[#333] tracking-[0.1em]">TOTAL PRESENT</span>
-              <span className="font-display text-xl text-white">{attendance.length}</span>
-            </div>
-          </div>
-        </div>
-      )}
+                <Field label="Attendance window">
+                  <select
+                    className="input"
+                    value={form.duration}
+                    onChange={(e) => setForm({ ...form, duration: e.target.value })}
+                  >
+                    {DURATIONS.map((d) => (
+                      <option key={d.value} value={d.value}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
 
-      {/* History */}
-      {lectures.length > 0 && (
-        <div className="card p-6">
-          <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-4">LECTURE_HISTORY</p>
-          <div className="flex flex-col gap-0">
-            {lectures.map((l) => (
-              <div
-                key={l.id}
-                className="flex justify-between py-3 border-b border-[#0d0d0d] cursor-pointer hover:bg-[#0a0a0a] px-2 transition-colors"
-                onClick={() => { setActive(l.lecture_id); refresh(); }}
-              >
-                <div className="flex gap-6">
-                  <span className="text-xs text-white">{l.lecture_id}</span>
-                  <span className="text-xs text-[#333]">{l.subject}</span>
-                </div>
-                <span className="text-xs text-[#222]">{new Date(l.start_time*1000).toLocaleDateString()}</span>
+                <Field
+                  label="Classroom location"
+                  hint="Optional. When set, students must be within range to check in."
+                >
+                  <button
+                    type="button"
+                    onClick={useCurrentLocation}
+                    disabled={locating}
+                    className="input text-left"
+                  >
+                    {locating
+                      ? "Locating…"
+                      : form.lat
+                        ? `${form.lat}, ${form.lng}`
+                        : "Use my current location"}
+                  </button>
+                </Field>
               </div>
-            ))}
-          </div>
-        </div>
+
+              <button type="submit" disabled={busy} className="btn btn-primary py-3 sm:self-start sm:px-8">
+                {step === "signing"
+                  ? "Confirm in your wallet…"
+                  : step === "saving"
+                    ? "Saving…"
+                    : "Create lecture"}
+              </button>
+
+              {notice && <Banner tone="ok">{notice}</Banner>}
+              {error && <Banner tone="danger">{error}</Banner>}
+            </Panel>
+          </form>
+
+          {activeLecture && (
+            <div className="grid gap-6 lg:grid-cols-2">
+              <QRDisplay lectureId={activeLecture} />
+
+              <Panel
+                title={`Attendance · ${activeLecture}`}
+                action={
+                  <span className="text-xs text-fg-faint">
+                    Live · updates every 5s
+                  </span>
+                }
+              >
+                {activeMeta && (
+                  <p className="text-xs text-fg-muted">
+                    {activeMeta.subject} · window closes{" "}
+                    {new Date(activeMeta.deadline * 1000).toLocaleTimeString()}
+                    {activeMeta.classroom_lat === null && " · no geofence"}
+                  </p>
+                )}
+
+                <div className="-mx-2 max-h-72 flex-1 overflow-y-auto">
+                  {roster.length === 0 ? (
+                    <EmptyState>Waiting for students…</EmptyState>
+                  ) : (
+                    <ul className="flex flex-col">
+                      {roster.map((entry) => (
+                        <li
+                          key={entry.id}
+                          className="fade-up border-b border-ink-800 px-2 py-3 last:border-0"
+                        >
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="text-sm text-fg">{entry.name ?? "Unknown"}</span>
+                            <span className="shrink-0 text-xs tabular-nums text-fg-subtle">
+                              {new Date(entry.timestamp * 1000).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span className="text-xs text-fg-muted">
+                              {entry.student_id ?? "—"}
+                            </span>
+                            <span className="text-xs text-fg-faint">
+                              {truncateAddress(entry.student_wallet)}
+                            </span>
+                            {entry.distance_meters !== null && (
+                              <span className="text-xs text-fg-faint">
+                                {entry.distance_meters}m away
+                              </span>
+                            )}
+                            {entry.solana_tx && <ExplorerLink signature={entry.solana_tx} />}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="flex items-baseline justify-between border-t border-ink-800 pt-4">
+                  <span className="label">Present</span>
+                  <span className="font-display text-2xl text-fg tabular-nums">
+                    {roster.length}
+                  </span>
+                </div>
+              </Panel>
+            </div>
+          )}
+
+          <Panel title="Your lectures">
+            {lectures.length === 0 ? (
+              <EmptyState>No lectures yet</EmptyState>
+            ) : (
+              <ul className="flex flex-col">
+                {lectures.map((lecture) => {
+                  const isOpen = Math.floor(Date.now() / 1000) <= lecture.deadline;
+                  const isActive = lecture.lecture_id === activeLecture;
+                  return (
+                    <li key={lecture.id}>
+                      <button
+                        type="button"
+                        onClick={() => setActiveLecture(lecture.lecture_id)}
+                        aria-pressed={isActive}
+                        className={`flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-ink-800 px-2 py-3 text-left transition-colors hover:bg-ink-850 ${
+                          isActive ? "bg-ink-850" : ""
+                        }`}
+                      >
+                        <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                          <span className="text-sm text-fg">{lecture.lecture_id}</span>
+                          <span className="text-xs text-fg-muted">{lecture.subject}</span>
+                        </span>
+                        <span className="flex items-center gap-3">
+                          <span className="text-xs text-fg-subtle tabular-nums">
+                            {lecture.attendance_count} present
+                          </span>
+                          <span
+                            className={`text-xs uppercase tracking-[0.12em] ${
+                              isOpen ? "text-ok" : "text-fg-faint"
+                            }`}
+                          >
+                            {isOpen ? "Open" : "Closed"}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Panel>
+        </>
       )}
     </div>
   );

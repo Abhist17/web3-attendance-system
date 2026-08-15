@@ -1,139 +1,238 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { registerStudent, getStudent } from "@/lib/api";
-import { getDeviceFingerprint } from "@/lib/fingerprint";
 
-const DEPTS = ["Computer Science","Electronics","Mechanical","Civil","Mathematics","Physics"];
+import { useCallback, useEffect, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
+import {
+  registerStudent,
+  getStudent,
+  apiErrorMessage,
+  type Student,
+} from "@/lib/api";
+import { getDeviceFingerprint } from "@/lib/fingerprint";
+import {
+  useAttendanceProgram,
+  isStudentRegisteredOnChain,
+  registerStudentOnChain,
+  chainErrorMessage,
+  MAX_STUDENT_ID_LEN,
+} from "@/lib/solana";
+import {
+  Banner,
+  ExplorerLink,
+  Field,
+  KeyValue,
+  PageHeader,
+  Panel,
+  WalletGate,
+  useMounted,
+} from "@/components/ui";
+
+const DEPARTMENTS = [
+  "Computer Science",
+  "Electronics",
+  "Mechanical",
+  "Civil",
+  "Mathematics",
+  "Physics",
+];
+
+type Step = "idle" | "signing" | "saving" | "done";
 
 export default function RegisterPage() {
+  const mounted = useMounted();
   const { publicKey } = useWallet();
-  const [form, setForm]           = useState({ student_id: "", name: "", department: "" });
-  const [status, setStatus]       = useState<"idle"|"loading"|"done"|"error">("idle");
-  const [message, setMessage]     = useState("");
-  const [existing, setExisting]   = useState<any>(null);
+  const program = useAttendanceProgram();
 
+  const [form, setForm] = useState({ student_id: "", name: "", department: "" });
+  const [step, setStep] = useState<Step>("idle");
+  const [error, setError] = useState("");
+  const [signature, setSignature] = useState("");
+  const [existing, setExisting] = useState<Student | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
 
-
-  useEffect(() => {
-    if (!publicKey) return;
-    getStudent(publicKey.toString())
-      .then((r) => setExisting(r.data.student))
-      .catch(() => setExisting(null));
+  const loadProfile = useCallback(async () => {
+    if (!publicKey) {
+      setExisting(null);
+      return;
+    }
+    setLoadingProfile(true);
+    try {
+      const result = await getStudent(publicKey.toString());
+      setExisting(result?.student ?? null);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not load your profile"));
+    } finally {
+      setLoadingProfile(false);
+    }
   }, [publicKey]);
 
-  const handle = async () => {
-    if (!publicKey) return setMessage("CONNECT WALLET FIRST");
-    if (!form.student_id || !form.name || !form.department) return setMessage("FILL ALL FIELDS");
-    setStatus("loading");
+  useEffect(() => {
+    void loadProfile();
+  }, [loadProfile]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!publicKey || !program) return;
+
+    const studentId = form.student_id.trim();
+    const name = form.name.trim();
+    if (!studentId || !name || !form.department) {
+      setError("Fill in every field before registering.");
+      return;
+    }
+    if (studentId.length > MAX_STUDENT_ID_LEN) {
+      setError(`Student ID must be at most ${MAX_STUDENT_ID_LEN} characters.`);
+      return;
+    }
+
+    setError("");
+    let tx = "";
+
     try {
+      // The profile PDA may already exist from a previous attempt that failed
+      // after the transaction landed; re-sending it would just error out.
+      const alreadyOnChain = await isStudentRegisteredOnChain(program, publicKey);
+      if (!alreadyOnChain) {
+        setStep("signing");
+        tx = await registerStudentOnChain(program, {
+          studentId,
+          name,
+          department: form.department,
+        });
+        setSignature(tx);
+      }
+    } catch (err) {
+      setStep("idle");
+      setError(chainErrorMessage(err, "Could not write your profile on-chain"));
+      return;
+    }
+
+    try {
+      setStep("saving");
       await registerStudent({
         wallet: publicKey.toString(),
-        student_id: form.student_id,
-        name: form.name,
+        student_id: studentId,
+        name,
         department: form.department,
         device_fingerprint: getDeviceFingerprint(),
+        solana_tx: tx || undefined,
       });
-      setStatus("done");
-      setMessage("REGISTRATION COMPLETE");
-    } catch (e: any) {
-      setStatus("error");
-      setMessage(e.response?.data?.error || "REGISTRATION FAILED");
+      setStep("done");
+      await loadProfile();
+    } catch (err) {
+      setStep("idle");
+      setError(apiErrorMessage(err, "On-chain profile created, but saving it locally failed"));
     }
   };
 
- 
+  const busy = step === "signing" || step === "saving";
+
+  if (!mounted) return null;
 
   return (
-    <div className="max-w-md mx-auto flex flex-col gap-6 relative z-10">
-      <div>
-        <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-2">SYSTEM :: REGISTRATION</p>
-        <h1 className="font-display text-2xl font-black text-white tracking-[0.1em]">REGISTER IDENTITY</h1>
-      </div>
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
+      <PageHeader
+        eyebrow="Registration"
+        title="Register your identity"
+        description="Binds your wallet to a student record on-chain and to this device. You will need a small amount of devnet SOL for the transaction fee."
+      />
 
-      {!publicKey && (
-        <div className="card p-4">
-          <p className="text-xs text-[#444] tracking-[0.15em]">CONNECT WALLET TO PROCEED</p>
-        </div>
-      )}
-
-      {existing && (
-        <div className="card p-6 flex flex-col gap-0">
-          <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-4">REGISTERED IDENTITY</p>
-          {[
-            ["NAME",   existing.name],
-            ["ID",     existing.student_id],
-            ["DEPT",   existing.department],
-            ["WALLET", publicKey?.toString().slice(0,28)+"..."],
-          ].map(([k,v]) => (
-            <div key={k} className="flex justify-between py-2 border-b border-[#0f0f0f]">
-              <span className="text-xs text-[#333] tracking-[0.1em]">{k}</span>
-              <span className="text-xs text-white">{v}</span>
-            </div>
-          ))}
-          <p className="text-xs text-[#222] tracking-[0.1em] mt-4">DEVICE FINGERPRINT BOUND</p>
-        </div>
-      )}
-
-      {!existing && publicKey && (
-        <div className="card p-6 flex flex-col gap-4">
-          <input
-            className="input px-4 py-3"
-            placeholder="STUDENT_ID"
-            value={form.student_id}
-            onChange={(e) => setForm({...form, student_id: e.target.value})}
-          />
-          <input
-            className="input px-4 py-3"
-            placeholder="FULL_NAME"
-            value={form.name}
-            onChange={(e) => setForm({...form, name: e.target.value})}
-          />
-          <select
-            className="input px-4 py-3"
-            value={form.department}
-            onChange={(e) => setForm({...form, department: e.target.value})}
-          >
-            <option value="">SELECT_DEPARTMENT</option>
-            {DEPTS.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-
-          <div className="border border-[#111] p-3">
-            <p className="text-xs text-[#2a2a2a] leading-5 tracking-[0.08em]">
-              YOUR DEVICE FINGERPRINT WILL BE BOUND TO THIS WALLET.
-              ATTENDANCE CAN ONLY BE MARKED FROM THIS DEVICE.
-            </p>
+      {!publicKey ? (
+        <WalletGate message="Connect a Solana wallet to create your student profile." />
+      ) : existing ? (
+        <Panel title="Registered">
+          <div className="flex flex-col">
+            <KeyValue label="Name">{existing.name}</KeyValue>
+            <KeyValue label="Student ID">{existing.student_id}</KeyValue>
+            <KeyValue label="Department">{existing.department}</KeyValue>
+            <KeyValue label="Wallet">{existing.wallet}</KeyValue>
+            <KeyValue label="Device">
+              {existing.device_bound ? "Bound to this account" : "Not bound"}
+            </KeyValue>
+            {existing.solana_tx && (
+              <KeyValue label="On-chain">
+                <ExplorerLink signature={existing.solana_tx} />
+              </KeyValue>
+            )}
           </div>
-
-          <button
-            onClick={handle}
-            disabled={status === "loading" || status === "done"}
-            className="btn-primary py-3 text-xs tracking-[0.2em]"
-          >
-            {status === "loading" ? "REGISTERING..." : "REGISTER IDENTITY"}
-          </button>
-
-          {message && (
-            <p className={`text-xs tracking-[0.1em] ${status === "error" ? "text-[#555]" : "text-white"}`}>
-              {message}
-            </p>
-          )}
-        </div>
-      )}
-
-      <div className="card p-5 flex flex-col gap-2">
-        <p className="text-xs text-[#222] tracking-[0.15em] mb-1">BINDS</p>
-        {[
-          "Wallet address → Student ID (1:1)",
-          "Device fingerprint → This browser",
-          "All 7 anti-proxy layers activated",
-        ].map((t, i) => (
-          <div key={i} className="flex gap-3">
-            <span className="text-[#333]">—</span>
-            <span className="text-xs text-[#333]">{t}</span>
+          <Banner tone="ok">
+            You are ready to mark attendance. Head to the Student page when your lecturer displays
+            a code.
+          </Banner>
+        </Panel>
+      ) : loadingProfile ? (
+        <Panel>
+          <div className="flex items-center gap-3 py-4">
+            <span className="spinner h-4 w-4" />
+            <span className="text-xs uppercase tracking-[0.15em] text-fg-muted">
+              Checking registration…
+            </span>
           </div>
-        ))}
-      </div>
+        </Panel>
+      ) : (
+        <form onSubmit={submit}>
+          <Panel title="Student details">
+            <Field label="Student ID" hint={`Max ${MAX_STUDENT_ID_LEN} characters.`}>
+              <input
+                className="input"
+                value={form.student_id}
+                maxLength={MAX_STUDENT_ID_LEN}
+                placeholder="e.g. 21BCE1043"
+                onChange={(e) => setForm({ ...form, student_id: e.target.value })}
+                required
+              />
+            </Field>
+
+            <Field label="Full name">
+              <input
+                className="input"
+                value={form.name}
+                maxLength={64}
+                placeholder="e.g. Abhishek Sharma"
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                required
+              />
+            </Field>
+
+            <Field label="Department">
+              <select
+                className="input"
+                value={form.department}
+                onChange={(e) => setForm({ ...form, department: e.target.value })}
+                required
+              >
+                <option value="">Select a department</option>
+                {DEPARTMENTS.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Banner tone="info">
+              Registering signs one transaction on Solana devnet and binds this browser as your
+              attendance device. Marking attendance from a different device will be rejected.
+            </Banner>
+
+            <button type="submit" disabled={busy} className="btn btn-primary py-3">
+              {step === "signing"
+                ? "Confirm in your wallet…"
+                : step === "saving"
+                  ? "Saving…"
+                  : "Register identity"}
+            </button>
+
+            {signature && step !== "done" && (
+              <p className="text-xs text-fg-muted">
+                Transaction sent: <ExplorerLink signature={signature} />
+              </p>
+            )}
+
+            {error && <Banner tone="danger">{error}</Banner>}
+          </Panel>
+        </form>
+      )}
     </div>
   );
 }

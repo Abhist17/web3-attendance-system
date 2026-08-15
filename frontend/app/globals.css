@@ -1,188 +1,311 @@
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+/* Tailwind v4 — a single import replaces the v3 @tailwind base/components/utilities trio. */
+@import "tailwindcss";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@theme {
+  /* Surfaces, darkest to lightest. */
+  --color-ink-950: #08090a;
+  --color-ink-900: #0d0f11;
+  --color-ink-850: #121517;
+  --color-ink-800: #171b1e;
+  --color-ink-700: #1f2428;
+  --color-ink-600: #2a3035;
+  --color-ink-500: #3a4249;
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  /* Foreground ramp. Every step below is >= 4.5:1 on --color-ink-950, which the
+     old palette (#222 on #000, ~1.3:1) badly failed. */
+  --color-fg: #e9edf0;
+  --color-fg-muted: #a3adb6;
+  --color-fg-subtle: #7c868f;
+  --color-fg-faint: #5b646c;
 
-body {
-  background: #000;
-  color: #fff;
-  font-family: 'Share Tech Mono', monospace;
-  min-height: 100vh;
-  overflow-x: hidden;
+  --color-ok: #6ee7a8;
+  --color-warn: #f0c674;
+  --color-danger: #f38b8b;
+
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", monospace;
+  --font-display: var(--font-orbitron), var(--font-jetbrains), monospace;
 }
 
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 3px,
-    rgba(255,255,255,0.012) 3px,
-    rgba(255,255,255,0.012) 4px
-  );
-  pointer-events: none;
-  z-index: 0;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--color-ink-950);
+    color: var(--color-fg);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scanline texture. Sits behind content and never eats pointer events. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent 0 3px,
+      rgba(255, 255, 255, 0.014) 3px 4px
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  ::selection {
+    background: var(--color-fg);
+    color: var(--color-ink-950);
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--color-fg-muted);
+    outline-offset: 2px;
+  }
+
+  /* Respect users who have asked the OS to tone motion down. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
-.font-display { font-family: 'Orbitron', monospace; }
-.font-mono    { font-family: 'Share Tech Mono', monospace; }
+@layer components {
+  .card {
+    background: var(--color-ink-900);
+    border: 1px solid var(--color-ink-700);
+    border-radius: 3px;
+  }
 
-/* ── Cards ── */
-.card {
-  background: #080808;
-  border: 1px solid #1c1c1c;
-  transition: border-color 0.2s;
-}
-.card:hover { border-color: #333; }
+  .card-interactive {
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .card-interactive:hover {
+    border-color: var(--color-ink-500);
+    background: var(--color-ink-850);
+  }
 
-/* ── Buttons ── */
-.btn-primary {
-  background: #fff;
-  color: #000;
-  border: 1px solid #fff;
-  font-family: 'Share Tech Mono', monospace;
-  letter-spacing: 0.12em;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: inline-block;
-  text-align: center;
-}
-.btn-primary:hover    { background: #ddd; border-color: #ddd; }
-.btn-primary:disabled { opacity: 0.25; cursor: not-allowed; }
+  /* Small uppercase section label used throughout the app. */
+  .label {
+    font-size: 0.6875rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-fg-subtle);
+  }
 
-.btn-ghost {
-  background: transparent;
-  color: #fff;
-  border: 1px solid #2a2a2a;
-  font-family: 'Share Tech Mono', monospace;
-  letter-spacing: 0.12em;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: inline-block;
-  text-align: center;
-}
-.btn-ghost:hover    { border-color: #666; color: #fff; }
-.btn-ghost:disabled { opacity: 0.25; cursor: not-allowed; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 
-/* ── Inputs ── */
-.input {
-  background: #000;
-  color: #fff;
-  border: 1px solid #222;
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 13px;
-  outline: none;
-  width: 100%;
-  transition: border-color 0.15s;
-}
-.input::placeholder { color: #2e2e2e; }
-.input:focus        { border-color: #555; }
+  .btn-primary {
+    background: var(--color-fg);
+    color: var(--color-ink-950);
+    border-color: var(--color-fg);
+  }
+  .btn-primary:not(:disabled):hover {
+    background: #fff;
+    border-color: #fff;
+  }
 
-/* ── Pulse dot ── */
-.dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: #fff;
-  animation: dot-pulse 2s ease-in-out infinite;
+  .btn-ghost {
+    background: transparent;
+    color: var(--color-fg);
+    border-color: var(--color-ink-600);
+  }
+  .btn-ghost:not(:disabled):hover {
+    border-color: var(--color-fg-subtle);
+    background: var(--color-ink-850);
+  }
+
+  .input {
+    width: 100%;
+    background: var(--color-ink-950);
+    color: var(--color-fg);
+    border: 1px solid var(--color-ink-700);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    padding: 0.75rem 0.875rem;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .input::placeholder {
+    color: var(--color-fg-faint);
+  }
+  .input:hover:not(:disabled) {
+    border-color: var(--color-ink-600);
+  }
+  .input:focus {
+    border-color: var(--color-fg-subtle);
+  }
+  /* Native selects render their popup with the OS palette; force the dark one. */
+  select.input {
+    color-scheme: dark;
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--color-fg-subtle) 50%),
+      linear-gradient(135deg, var(--color-fg-subtle) 50%, transparent 50%);
+    background-position: calc(100% - 18px) center, calc(100% - 13px) center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 2.25rem;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: dot-pulse 2s ease-in-out infinite;
+  }
+
+  .spinner {
+    border: 1.5px solid var(--color-ink-600);
+    border-top-color: var(--color-fg);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  /* Row of key/value metadata, used on the profile and receipt panels. */
+  .kv {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.625rem 0;
+    border-bottom: 1px solid var(--color-ink-800);
+  }
+  .kv:last-child {
+    border-bottom: none;
+  }
 }
+
 @keyframes dot-pulse {
-  0%,100% { opacity: 1; }
-  50%      { opacity: 0.2; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
 }
 
-/* ── Blink ── */
-.blink { animation: blink 1s step-end infinite; }
-@keyframes blink { 50% { opacity: 0; } }
-
-/* ── Spinner ── */
-.spinner {
-  border: 1px solid #333;
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Divider ── */
-.divider { border: none; border-top: 1px solid #111; }
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.blink {
+  animation: blink 1s step-end infinite;
+}
 
-/* ─────────────────────────────────────────
-   WALLET ADAPTER — FULL OVERRIDE (B&W ONLY)
-   ───────────────────────────────────────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.fade-up {
+  animation: fade-up 0.25s ease-out both;
+}
+
+/* ─────────────────────────────────────────────
+   Solana wallet-adapter overrides
+   The package ships its own purple theme; restyle it to match the terminal UI.
+   ───────────────────────────────────────────── */
 .wallet-adapter-button,
-.wallet-adapter-button-trigger,
-.wallet-adapter-button:not([disabled]) {
+.wallet-adapter-button-trigger {
   background: transparent !important;
-  border: 1px solid #2a2a2a !important;
-  color: #fff !important;
-  font-family: 'Share Tech Mono', monospace !important;
-  font-size: 12px !important;
+  border: 1px solid var(--color-ink-600) !important;
+  color: var(--color-fg) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
   letter-spacing: 0.1em !important;
-  border-radius: 2px !important;
-  padding: 8px 18px !important;
-  box-shadow: none !important;
+  text-transform: uppercase !important;
+  border-radius: 3px !important;
+  padding: 0.5rem 1rem !important;
   height: auto !important;
   line-height: 1.5 !important;
-}
-.wallet-adapter-button:hover,
-.wallet-adapter-button-trigger:hover,
-.wallet-adapter-button:not([disabled]):hover {
-  background: #ffffff0d !important;
-  border-color: #666 !important;
   box-shadow: none !important;
+}
+.wallet-adapter-button:not([disabled]):hover,
+.wallet-adapter-button-trigger:not([disabled]):hover {
+  background: var(--color-ink-850) !important;
+  border-color: var(--color-fg-subtle) !important;
 }
 .wallet-adapter-button-start-icon,
 .wallet-adapter-button img {
   display: none !important;
 }
 
-/* Modal */
 .wallet-adapter-modal-wrapper {
-  background: #000 !important;
-  border: 1px solid #1c1c1c !important;
+  background: var(--color-ink-900) !important;
+  border: 1px solid var(--color-ink-700) !important;
+  border-radius: 4px !important;
   box-shadow: none !important;
-  border-radius: 2px !important;
 }
 .wallet-adapter-modal-title {
-  font-family: 'Share Tech Mono', monospace !important;
-  color: #fff !important;
-  font-size: 13px !important;
+  font-family: var(--font-mono) !important;
+  color: var(--color-fg) !important;
+  font-size: 0.875rem !important;
   letter-spacing: 0.1em !important;
 }
 .wallet-adapter-modal-overlay {
-  background: rgba(0,0,0,0.9) !important;
+  background: rgba(0, 0, 0, 0.85) !important;
 }
 .wallet-adapter-modal-list li {
   margin-bottom: 4px !important;
 }
 .wallet-adapter-modal-list .wallet-adapter-button {
-  background: #080808 !important;
-  border: 1px solid #1c1c1c !important;
-  border-radius: 2px !important;
+  background: var(--color-ink-850) !important;
+  border: 1px solid var(--color-ink-700) !important;
   width: 100% !important;
   justify-content: flex-start !important;
-  padding: 10px 14px !important;
+  padding: 0.625rem 0.875rem !important;
 }
 .wallet-adapter-modal-list .wallet-adapter-button:hover {
-  background: #111 !important;
-  border-color: #333 !important;
+  background: var(--color-ink-800) !important;
+  border-color: var(--color-ink-500) !important;
 }
-.wallet-adapter-modal-list-more-button {
-  background: transparent !important;
-  color: #555 !important;
-  font-family: 'Share Tech Mono', monospace !important;
-}
+.wallet-adapter-modal-list-more-button,
 .wallet-adapter-collapse-button {
-  color: #555 !important;
+  background: transparent !important;
+  color: var(--color-fg-subtle) !important;
+  font-family: var(--font-mono) !important;
 }
 .wallet-adapter-modal-middle-button {
-  background: #fff !important;
-  color: #000 !important;
-  border-radius: 2px !important;
-  font-family: 'Share Tech Mono', monospace !important;
+  background: var(--color-fg) !important;
+  color: var(--color-ink-950) !important;
+  border-radius: 3px !important;
+  font-family: var(--font-mono) !important;
 }

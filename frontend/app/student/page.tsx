@@ -1,162 +1,350 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { markAttendance, getStudent } from "@/lib/api";
-import { getDeviceFingerprint } from "@/lib/fingerprint";
+
+import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { useWallet } from "@solana/wallet-adapter-react";
+import {
+  markAttendance,
+  getStudent,
+  apiErrorMessage,
+  type AttendanceRecord,
+  type QRPayload,
+  type Student,
+} from "@/lib/api";
+import { getDeviceFingerprint } from "@/lib/fingerprint";
+import {
+  useAttendanceProgram,
+  markAttendanceOnChain,
+  chainErrorMessage,
+} from "@/lib/solana";
+import {
+  Banner,
+  EmptyState,
+  ExplorerLink,
+  KeyValue,
+  PageHeader,
+  Panel,
+  WalletGate,
+  truncateAddress,
+  useMounted,
+} from "@/components/ui";
 
-const QRScanner = dynamic(() => import("@/components/QRScanner"), { ssr: false });
+const QRScanner = dynamic(() => import("@/components/QRScanner"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex aspect-square w-full max-w-xs items-center justify-center rounded-[3px] border border-ink-700">
+      <span className="spinner h-6 w-6" />
+    </div>
+  ),
+});
 
-type Status = "idle" | "submitting" | "done" | "error";
+type StepState = "pending" | "active" | "done" | "failed";
+
+interface StepInfo {
+  key: string;
+  label: string;
+  state: StepState;
+}
+
+const STEP_LABELS: [string, string][] = [
+  ["scan", "Read QR code"],
+  ["location", "Confirm your location"],
+  ["device", "Check device binding"],
+  ["chain", "Sign the on-chain record"],
+  ["verify", "Server verification"],
+];
+
+type Phase = "idle" | "running" | "done" | "error";
 
 export default function StudentPage() {
+  const mounted = useMounted();
   const { publicKey } = useWallet();
+  const program = useAttendanceProgram();
 
-  const [status, setStatus]       = useState<Status>("idle");
-  const [message, setMessage]     = useState("");
-  const [checks, setChecks]       = useState<string[]>([]);
-  const [history, setHistory]     = useState<any[]>([]);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [steps, setSteps] = useState<StepInfo[]>([]);
+  const [message, setMessage] = useState("");
+  const [receipt, setReceipt] = useState<{
+    lecture_id: string;
+    subject: string;
+    timestamp: number;
+    distance_meters: number | null;
+    solana_tx: string | null;
+  } | null>(null);
 
+  const [profile, setProfile] = useState<Student | null>(null);
+  const [history, setHistory] = useState<AttendanceRecord[]>([]);
+  const [loadingProfile, setLoadingProfile] = useState(false);
 
+  const loadProfile = useCallback(async () => {
+    if (!publicKey) {
+      setProfile(null);
+      setHistory([]);
+      return;
+    }
+    setLoadingProfile(true);
+    try {
+      const result = await getStudent(publicKey.toString());
+      setProfile(result?.student ?? null);
+      setHistory(result?.attendance ?? []);
+    } catch {
+      // Non-fatal: the scan flow surfaces its own errors.
+    } finally {
+      setLoadingProfile(false);
+    }
+  }, [publicKey]);
 
   useEffect(() => {
-    if (!publicKey) return;
-    getStudent(publicKey.toString())
-      .then((r) => setHistory(r.data.attendance))
-      .catch(() => {});
-  }, [publicKey, status]);
+    void loadProfile();
+  }, [loadProfile]);
 
-  const add = (msg: string) => setChecks((c) => [...c, msg]);
+  const initSteps = () =>
+    setSteps(
+      STEP_LABELS.map(([key, label], i) => ({
+        key,
+        label,
+        state: i === 0 ? "active" : "pending",
+      }))
+    );
+
+  const advance = (key: string, state: StepState, nextKey?: string) =>
+    setSteps((prev) =>
+      prev.map((s) =>
+        s.key === key ? { ...s, state } : s.key === nextKey ? { ...s, state: "active" } : s
+      )
+    );
+
+  const failCurrent = () =>
+    setSteps((prev) => prev.map((s) => (s.state === "active" ? { ...s, state: "failed" } : s)));
 
   const handleScan = async (raw: string) => {
-    if (!publicKey) { setMessage("CONNECT WALLET FIRST"); setStatus("error"); return; }
-    setStatus("submitting");
-    setChecks([]);
+    if (!publicKey || !program) {
+      setMessage("Connect your wallet first.");
+      setPhase("error");
+      return;
+    }
+
+    setPhase("running");
+    setReceipt(null);
+    setMessage("");
+    initSteps();
+
+    let payload: QRPayload;
     try {
-      add("QR PAYLOAD RECEIVED");
-      const payload = JSON.parse(raw);
+      payload = JSON.parse(raw);
+      if (!payload?.lecture_id || !payload?.signature) throw new Error("bad payload");
+      advance("scan", "done", "location");
+    } catch {
+      failCurrent();
+      setPhase("error");
+      setMessage("That is not a valid attendance code. Scan the code shown by your lecturer.");
+      return;
+    }
 
-      add("ACQUIRING GEOLOCATION...");
-      const pos = await new Promise<GeolocationPosition>((res, rej) =>
-        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 10000 })
+    let position: GeolocationPosition;
+    try {
+      position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error("This device cannot report a location."));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+        });
+      });
+      advance("location", "done", "device");
+    } catch {
+      failCurrent();
+      setPhase("error");
+      setMessage(
+        "Could not read your location. Allow location access in your browser and scan again."
       );
-      add("LOCATION ACQUIRED");
+      return;
+    }
 
-      add("READING DEVICE FINGERPRINT...");
-      const fp = getDeviceFingerprint();
-      add("FINGERPRINT CAPTURED");
+    const fingerprint = getDeviceFingerprint();
+    advance("device", "done", "chain");
 
-      add("SUBMITTING TO VERIFICATION LAYER...");
-      await markAttendance({
-        lecture_id: payload.lecture_id,
+    // The chain write comes before the server call so the recorded signature is
+    // always real. If the student rejects it, nothing is written anywhere.
+    let signature: string;
+    try {
+      signature = await markAttendanceOnChain(program, payload.lecture_id);
+      advance("chain", "done", "verify");
+    } catch (err) {
+      failCurrent();
+      setPhase("error");
+      setMessage(chainErrorMessage(err, "The on-chain transaction failed"));
+      return;
+    }
+
+    try {
+      const result = await markAttendance({
         student_wallet: publicKey.toString(),
         qr_payload: payload,
-        student_lat: pos.coords.latitude,
-        student_lng: pos.coords.longitude,
-        device_fingerprint: fp,
+        student_lat: position.coords.latitude,
+        student_lng: position.coords.longitude,
+        device_fingerprint: fingerprint,
+        solana_tx: signature,
       });
-
-      add("ALL 7 CHECKS PASSED");
-      add("ATTENDANCE RECORDED");
-      setStatus("done");
-      setMessage(`CONFIRMED · LECTURE_${payload.lecture_id}`);
-    } catch (e: any) {
-      add("VERIFICATION FAILED");
-      setStatus("error");
-      setMessage(e.response?.data?.error || e.message || "UNKNOWN ERROR");
+      advance("verify", "done");
+      setReceipt(result.record);
+      setPhase("done");
+      await loadProfile();
+    } catch (err) {
+      failCurrent();
+      setPhase("error");
+      setMessage(apiErrorMessage(err, "Verification failed"));
     }
   };
 
-  const reset = () => { setStatus("idle"); setChecks([]); setMessage(""); };
+  const reset = () => {
+    setPhase("idle");
+    setSteps([]);
+    setMessage("");
+    setReceipt(null);
+  };
+
+  if (!mounted) return null;
 
   return (
-    <div className="max-w-xl mx-auto flex flex-col gap-6 relative z-10">
-      <div>
-        <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-2">SYSTEM :: STUDENT</p>
-        <h1 className="font-display text-2xl font-black text-white tracking-[0.1em]">MARK ATTENDANCE</h1>
-      </div>
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-6">
+      <PageHeader
+        eyebrow="Student"
+        title="Mark attendance"
+        description="Scan the code your lecturer is projecting. It rotates every minute, so a screenshot will not work."
+      />
 
       {!publicKey ? (
-        <div className="card p-4">
-          <p className="text-xs text-[#444] tracking-[0.15em]">CONNECT WALLET TO PROCEED</p>
-        </div>
+        <WalletGate message="Connect the wallet you registered with to mark attendance." />
       ) : (
-        <div className="card p-3 flex items-center gap-3">
-          <div className="dot" />
-          <span className="text-xs text-[#333] tracking-[0.1em]">WALLET</span>
-          <span className="text-xs text-white truncate">{publicKey.toString()}</span>
-        </div>
-      )}
-
-      <div className="card p-6">
-        {status === "idle" && (
-          <div className="flex flex-col items-center gap-5">
-            <p className="text-xs text-[#2a2a2a] tracking-[0.2em] self-start">SCAN_QR_CODE</p>
-            <QRScanner onScan={handleScan} />
-          </div>
-        )}
-
-        {status === "submitting" && (
-          <div className="flex flex-col gap-3">
-            <p className="text-xs text-[#2a2a2a] tracking-[0.2em]">VERIFICATION_PIPELINE</p>
-            {checks.map((c, i) => (
-              <div key={i} className="flex items-center gap-3">
-                <div className={`w-1 h-1 rounded-full flex-shrink-0 ${c.includes("FAILED") ? "bg-[#333]" : "bg-white"}`} />
-                <span className={`text-xs tracking-[0.08em] ${c.includes("FAILED") ? "text-[#333]" : "text-white"}`}>{c}</span>
-              </div>
-            ))}
-            <div className="flex items-center gap-3 mt-1">
-              <div className="spinner w-3 h-3 flex-shrink-0" />
-              <span className="text-xs text-[#333] tracking-[0.1em]">PROCESSING...</span>
+        <>
+          <Panel>
+            <div className="flex flex-col">
+              <KeyValue label="Wallet">{truncateAddress(publicKey.toString(), 8, 8)}</KeyValue>
+              <KeyValue label="Student">
+                {loadingProfile ? "Checking…" : (profile?.name ?? "Not registered")}
+              </KeyValue>
             </div>
-          </div>
-        )}
+            {!loadingProfile && !profile && (
+              <Banner tone="warn">
+                This wallet is not registered. Visit the Register page first — attendance from an
+                unregistered wallet is rejected.
+              </Banner>
+            )}
+          </Panel>
 
-        {status === "done" && (
-          <div className="flex flex-col items-center gap-5 py-4">
-            <p className="font-display text-3xl font-black text-white tracking-[0.1em]">CONFIRMED</p>
-            <p className="text-xs text-[#888] tracking-[0.15em] text-center">{message}</p>
-            <div className="w-full flex flex-col gap-1.5 border-t border-[#0f0f0f] pt-4">
-              {checks.map((c, i) => (
-                <p key={i} className="text-xs text-[#444] tracking-[0.08em]">— {c}</p>
-              ))}
-            </div>
-            <button onClick={reset} className="btn-ghost px-8 py-2 text-xs tracking-[0.15em] mt-2">
-              SCAN ANOTHER
-            </button>
-          </div>
-        )}
+          <Panel title={phase === "idle" ? "Scan code" : "Verification"}>
+            {phase === "idle" && <QRScanner onScan={handleScan} />}
 
-        {status === "error" && (
-          <div className="flex flex-col items-center gap-5 py-4">
-            <p className="font-display text-3xl font-black text-[#333] tracking-[0.1em]">REJECTED</p>
-            <p className="text-xs text-[#555] tracking-[0.15em] text-center">{message}</p>
-            <div className="w-full flex flex-col gap-1.5 border-t border-[#0f0f0f] pt-4">
-              {checks.map((c, i) => (
-                <p key={i} className={`text-xs tracking-[0.08em] ${c.includes("FAILED") ? "text-[#333]" : "text-[#444]"}`}>
-                  — {c}
+            {phase !== "idle" && (
+              <ol className="flex flex-col gap-3">
+                {steps.map((step) => (
+                  <li key={step.key} className="flex items-center gap-3">
+                    <span
+                      aria-hidden
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center text-xs ${
+                        step.state === "done"
+                          ? "text-ok"
+                          : step.state === "failed"
+                            ? "text-danger"
+                            : step.state === "active"
+                              ? "text-fg"
+                              : "text-fg-faint"
+                      }`}
+                    >
+                      {step.state === "done"
+                        ? "✓"
+                        : step.state === "failed"
+                          ? "✕"
+                          : step.state === "active"
+                            ? "•"
+                            : "·"}
+                    </span>
+                    <span
+                      className={`text-sm ${
+                        step.state === "pending" ? "text-fg-faint" : "text-fg-muted"
+                      }`}
+                    >
+                      {step.label}
+                    </span>
+                    {step.state === "active" && phase === "running" && (
+                      <span className="spinner ml-auto h-3 w-3" />
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+
+            {phase === "done" && receipt && (
+              <div className="fade-up flex flex-col gap-4 border-t border-ink-800 pt-5">
+                <p className="font-display text-xl font-black tracking-[0.08em] text-ok">
+                  Attendance confirmed
                 </p>
-              ))}
-            </div>
-            <button onClick={reset} className="btn-ghost px-8 py-2 text-xs tracking-[0.15em] mt-2">
-              TRY AGAIN
-            </button>
-          </div>
-        )}
-      </div>
-
-      {history.length > 0 && (
-        <div className="card p-6">
-          <p className="text-xs text-[#2a2a2a] tracking-[0.2em] mb-4">ATTENDANCE_HISTORY</p>
-          <div className="flex flex-col gap-0">
-            {history.map((h: any, i: number) => (
-              <div key={i} className="flex justify-between py-2 border-b border-[#0d0d0d]">
-                <span className="text-xs text-white">LECTURE_{h.lecture_id}</span>
-                <span className="text-xs text-[#333]">{new Date(h.timestamp * 1000).toLocaleString()}</span>
+                <div className="flex flex-col">
+                  <KeyValue label="Lecture">
+                    {receipt.subject} · {receipt.lecture_id}
+                  </KeyValue>
+                  <KeyValue label="Time">
+                    {new Date(receipt.timestamp * 1000).toLocaleString()}
+                  </KeyValue>
+                  {receipt.distance_meters !== null && (
+                    <KeyValue label="Distance">{receipt.distance_meters}m from class</KeyValue>
+                  )}
+                  {receipt.solana_tx && (
+                    <KeyValue label="On-chain">
+                      <ExplorerLink signature={receipt.solana_tx} />
+                    </KeyValue>
+                  )}
+                </div>
+                <button onClick={reset} className="btn btn-ghost py-3">
+                  Done
+                </button>
               </div>
-            ))}
-          </div>
-        </div>
+            )}
+
+            {phase === "error" && (
+              <div className="fade-up flex flex-col gap-4 border-t border-ink-800 pt-5">
+                <p className="font-display text-xl font-black tracking-[0.08em] text-danger">
+                  Not recorded
+                </p>
+                <Banner tone="danger">{message}</Banner>
+                <button onClick={reset} className="btn btn-primary py-3">
+                  Try again
+                </button>
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Your attendance">
+            {history.length === 0 ? (
+              <EmptyState>No attendance recorded yet</EmptyState>
+            ) : (
+              <ul className="flex flex-col">
+                {history.map((record) => (
+                  <li
+                    key={`${record.lecture_id}-${record.timestamp}`}
+                    className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-ink-800 py-3 last:border-0"
+                  >
+                    <span className="flex flex-wrap items-baseline gap-x-3">
+                      <span className="text-sm text-fg">{record.lecture_id}</span>
+                      {record.subject && (
+                        <span className="text-xs text-fg-muted">{record.subject}</span>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-3">
+                      {record.solana_tx && <ExplorerLink signature={record.solana_tx} />}
+                      <span className="text-xs tabular-nums text-fg-subtle">
+                        {new Date(record.timestamp * 1000).toLocaleDateString()}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+        </>
       )}
     </div>
   );

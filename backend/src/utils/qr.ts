@@ -1,12 +1,7 @@
 import crypto from "crypto";
 import QRCode from "qrcode";
-import { v4 as uuidv4 } from "uuid";
-import dotenv from "dotenv";
-import db from "../config/database";
-dotenv.config();
-
-const SECRET = process.env.QR_SECRET || "default_secret";
-const EXPIRY = parseInt(process.env.QR_EXPIRY_SECONDS || "60");
+import { randomUUID } from "crypto";
+import { env } from "../config/env";
 
 export interface QRPayload {
   lecture_id: string;
@@ -15,55 +10,79 @@ export interface QRPayload {
   signature: string;
 }
 
-export function generateQRPayload(lectureId: string): QRPayload {
-  const nonce = uuidv4();
-  const timestamp = Math.floor(Date.now() / 1000);
-  const data = `${lectureId}:${nonce}:${timestamp}`;
-  const signature = crypto
-    .createHmac("sha256", SECRET)
-    .update(data)
+function sign(lectureId: string, nonce: string, timestamp: number): string {
+  return crypto
+    .createHmac("sha256", env.qrSecret)
+    .update(`${lectureId}:${nonce}:${timestamp}`)
     .digest("hex");
-  return { lecture_id: lectureId, nonce, timestamp, signature };
 }
 
-export async function generateQRImage(lectureId: string): Promise<string> {
-  const payload = generateQRPayload(lectureId);
-  const json = JSON.stringify(payload);
-  return await QRCode.toDataURL(json, {
-    width: 300,
+export function generateQRPayload(lectureId: string): QRPayload {
+  const nonce = randomUUID();
+  const timestamp = Math.floor(Date.now() / 1000);
+  return {
+    lecture_id: lectureId,
+    nonce,
+    timestamp,
+    signature: sign(lectureId, nonce, timestamp),
+  };
+}
+
+/**
+ * Renders an existing payload. It deliberately takes the payload rather than a
+ * lecture id: generating one internally would hand the caller an image and a
+ * JSON payload carrying two different nonces.
+ */
+export async function renderQRImage(payload: QRPayload): Promise<string> {
+  return QRCode.toDataURL(JSON.stringify(payload), {
+    width: 320,
     margin: 2,
-    color: { dark: "#ffffff", light: "#000000" },
+    errorCorrectionLevel: "M",
+    // Dark modules must actually be dark. An inverted QR is unreadable by most
+    // scanners, including the html5-qrcode reader the student app uses.
+    color: { dark: "#000000", light: "#ffffff" },
   });
 }
 
-export function verifyQRPayload(payload: QRPayload): {
-  valid: boolean;
-  reason?: string;
-} {
+export type QRVerification =
+  | { valid: true; payload: QRPayload }
+  | { valid: false; reason: string };
+
+/**
+ * Pure structural check: shape, freshness and signature. Nonce replay is
+ * handled separately at commit time so that a failed downstream check does not
+ * burn the code.
+ */
+export function verifyQRPayload(payload: unknown): QRVerification {
+  if (!payload || typeof payload !== "object") {
+    return { valid: false, reason: "Malformed QR payload" };
+  }
+
+  const { lecture_id, nonce, timestamp, signature } = payload as Record<string, unknown>;
+  if (
+    typeof lecture_id !== "string" ||
+    typeof nonce !== "string" ||
+    typeof timestamp !== "number" ||
+    typeof signature !== "string"
+  ) {
+    return { valid: false, reason: "Malformed QR payload" };
+  }
+
   const now = Math.floor(Date.now() / 1000);
+  // Allow a small negative skew for clients whose clock runs ahead.
+  if (timestamp - now > 5) {
+    return { valid: false, reason: "QR code is not valid yet — check your device clock" };
+  }
+  if (now - timestamp > env.qrExpirySeconds) {
+    return { valid: false, reason: "QR code expired — scan the current code" };
+  }
 
-  // 1. Check expiry
-  if (now - payload.timestamp > EXPIRY)
-    return { valid: false, reason: "QR code expired — ask professor to refresh" };
+  const expected = sign(lecture_id, nonce, timestamp);
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(signature, "hex");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { valid: false, reason: "Invalid QR signature — possible forgery" };
+  }
 
-  // 2. Verify HMAC signature
-  const data = `${payload.lecture_id}:${payload.nonce}:${payload.timestamp}`;
-  const expected = crypto
-    .createHmac("sha256", SECRET)
-    .update(data)
-    .digest("hex");
-  if (expected !== payload.signature)
-    return { valid: false, reason: "Invalid QR signature — possible forgery detected" };
-
-  // 3. Check nonce not reused (DB-backed, survives restarts)
-  const existing = db
-    .prepare("SELECT nonce FROM used_nonces WHERE nonce = ?")
-    .get(payload.nonce);
-  if (existing)
-    return { valid: false, reason: "QR code already used — proxy attempt blocked" };
-
-  // 4. Mark nonce as used atomically
-  db.prepare("INSERT INTO used_nonces (nonce) VALUES (?)").run(payload.nonce);
-
-  return { valid: true };
+  return { valid: true, payload: { lecture_id, nonce, timestamp, signature } };
 }
